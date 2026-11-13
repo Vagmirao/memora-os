@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-main: #0c0e10;
+    --surface-1: #121416;
+    --surface-2: #1a1c1e;
+    --surface-3: #1e2022;
+    --surface-4: #282a2c;
+    --surface-5: #333537;
+    --text-primary: #e2e2e5;
+    --text-secondary: #b9cacb;
+    --border-muted: #3b494b;
+    --accent-cyan: #00F0FF;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c0e10;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #282a2c;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3b494b;
+}
+
+/* Scanline / pulse animation utilities */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.animate-scanline {
+  animation: scanline 4s linear infinite;
+}
+
+@keyframes pulse-cyan {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 4px rgba(0, 240, 255, 0.6)); }
+  50% { opacity: 0.4; filter: drop-shadow(0 0 1px rgba(0, 240, 255, 0.2)); }
+}
+
+.animate-pulse-cyan {
+  animation: pulse-cyan 2s ease-in-out infinite;
+}
+

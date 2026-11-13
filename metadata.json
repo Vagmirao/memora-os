@@ -1,0 +1,6 @@
+{
+  "name": "MEMORA OS",
+  "description": "Advanced AI Memory Operating System for inspecting, searching, visualizing, editing, versioning, archiving, restoring and reconstructing AI memories across time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
