@@ -6,6 +6,7 @@ from backend.app.db.database import engine, get_db
 from backend.app.api.users import router as users_router
 from backend.app.api.events import router as events_router
 from backend.app.api.memories import router as memories_router
+from backend.app.api.versions import router as versions_router
 
 app = FastAPI(
     title="Memora API",
@@ -16,6 +17,7 @@ app = FastAPI(
 app.include_router(users_router)
 app.include_router(events_router)
 app.include_router(memories_router)
+app.include_router(versions_router)
 
 @app.get("/")
 async def root():

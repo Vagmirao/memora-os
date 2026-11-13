@@ -15,10 +15,23 @@ from backend.app.schemas.memory import (
     MemoryCreate,
     MemoryListResponse,
     MemoryResponse,
-    MemoryUpdate,
     MemoryVersionResponse,
 )
 
+from backend.app.schemas.editing import (
+    MemoryEditRequest,
+    MemoryEditPreview,
+    MemoryVersionComparison,
+)
+
+from backend.app.services.memory_service import (
+    update_memory_safely,
+    preview_memory_edit,
+    compare_memory_versions,
+    revert_memory_safely,
+    StaleMemoryVersionError,
+    MemoryVersionNotFoundError,
+)
 
 router = APIRouter(
     prefix="/api/memories",
@@ -107,6 +120,7 @@ def get_memories(
         "total": len(memories),
     }
 
+
 @router.post(
     "/{memory_id}/revert/{version_number}",
     response_model=MemoryResponse,
@@ -114,8 +128,15 @@ def get_memories(
 def revert_memory(
     memory_id: UUID,
     version_number: int,
+    expected_version: int,
     db: Session = Depends(get_db),
 ):
+    if version_number < 1 or expected_version < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Version numbers must be positive.",
+        )
+
     memory = db.get(Memory, memory_id)
 
     if memory is None:
@@ -130,63 +151,34 @@ def revert_memory(
             detail="Cannot revert an inactive memory.",
         )
 
-    version_statement = (
-        select(MemoryVersion)
-        .where(
-            MemoryVersion.memory_id == memory_id,
-            MemoryVersion.version_number == version_number,
+    try:
+        reverted_memory = revert_memory_safely(
+            db=db,
+            memory_id=memory_id,
+            version_number=version_number,
+            expected_version=expected_version,
         )
-    )
 
-    version = db.scalar(version_statement)
+    except StaleMemoryVersionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
-    if version is None:
+    except MemoryVersionNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Memory version not found.",
-        )
+            detail=str(error),
+        ) from error
 
-    memory.content = version.content
-    memory.memory_type = version.memory_type
-    memory.confidence = version.confidence
-    memory.importance = version.importance
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
 
-    db.flush()
+    return reverted_memory
 
-    latest_version = db.scalar(
-        select(MemoryVersion.version_number)
-        .where(MemoryVersion.memory_id == memory.id)
-        .order_by(MemoryVersion.version_number.desc())
-        .limit(1)
-    )
-
-    next_version_number = (latest_version or 0) + 1
-
-    new_version = MemoryVersion(
-        memory_id=memory.id,
-        version_number=next_version_number,
-        content=memory.content,
-        memory_type=memory.memory_type,
-        confidence=memory.confidence,
-        importance=memory.importance,
-    )
-
-    db.add(new_version)
-    db.flush()
-
-    event = MemoryEvent(
-    memory_id=memory.id,
-    version_id=new_version.id,
-    event_type="REVERTED",
-    description=f"Memory reverted to version {version_number}.",
-    )
-
-    db.add(event)
-
-    db.commit()
-    db.refresh(memory)
-
-    return memory
 
 @router.patch(
     "/{memory_id}",
@@ -194,7 +186,8 @@ def revert_memory(
 )
 def update_memory(
     memory_id: UUID,
-    memory_data: MemoryUpdate,
+    memory_data: MemoryEditRequest,
+    expected_version: int,
     db: Session = Depends(get_db),
 ):
     memory = db.get(Memory, memory_id)
@@ -221,52 +214,131 @@ def update_memory(
             detail="No fields provided for update.",
         )
 
-    for field, value in update_data.items():
-        setattr(memory, field, value)
+    try:
+        updated_memory = update_memory_safely(
+            db=db,
+            memory=memory,
+            update_data=update_data,
+            expected_version=expected_version,
+        )
 
-    db.flush()
+    except StaleMemoryVersionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
-    latest_version = db.scalar(
-        select(MemoryVersion.version_number)
-        .where(MemoryVersion.memory_id == memory.id)
-        .order_by(MemoryVersion.version_number.desc())
-        .limit(1)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+    return updated_memory
+
+
+@router.post(
+    "/{memory_id}/preview",
+    response_model=MemoryEditPreview,
+)
+def preview_memory_update(
+    memory_id: UUID,
+    memory_data: MemoryEditRequest,
+    db: Session = Depends(get_db),
+):
+    memory = db.get(Memory, memory_id)
+
+    if memory is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found.",
+        )
+
+    if not memory.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot preview edits for an inactive memory.",
+        )
+
+    update_data = memory_data.model_dump(
+        exclude_unset=True,
     )
 
-    next_version_number = (
-        (latest_version or 0) + 1
+    preview = preview_memory_edit(
+        memory=memory,
+        update_data=update_data,
     )
 
-    version = MemoryVersion(
-        memory_id=memory.id,
-        version_number=next_version_number,
-        content=memory.content,
-        memory_type=memory.memory_type,
-        confidence=memory.confidence,
-        importance=memory.importance,
+    return preview
+
+
+@router.get(
+    "/{memory_id}/compare",
+    response_model=MemoryVersionComparison,
+)
+def compare_versions(
+    memory_id: UUID,
+    from_version: int,
+    to_version: int,
+    db: Session = Depends(get_db),
+):
+    if from_version < 1 or to_version < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Version numbers must be positive.",
+        )
+
+    if from_version == to_version:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please select two different versions.",
+        )
+
+    memory = db.get(Memory, memory_id)
+
+    if memory is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory not found.",
+        )
+
+    from_statement = (
+        select(MemoryVersion)
+        .where(
+            MemoryVersion.memory_id == memory_id,
+            MemoryVersion.version_number == from_version,
+        )
     )
 
-    db.add(version)
-    db.flush()
-
-    event = MemoryEvent(
-    memory_id=memory.id,
-    version_id=version.id,
-    event_type="UPDATED",
-    description="Memory updated.",
+    to_statement = (
+        select(MemoryVersion)
+        .where(
+            MemoryVersion.memory_id == memory_id,
+            MemoryVersion.version_number == to_version,
+        )
     )
 
-    db.add(event)
+    old_version = db.scalar(from_statement)
+    new_version = db.scalar(to_statement)
 
-    db.commit()
-    db.refresh(memory)
+    if old_version is None or new_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="One or both memory versions were not found.",
+        )
 
-    return memory
+    return compare_memory_versions(
+        memory_id=memory_id,
+        from_version=old_version,
+        to_version=new_version,
+    )
+
 
 @router.get(
     "/{memory_id}/versions",
     response_model=list[MemoryVersionResponse],
 )
+
 def get_memory_versions(
     memory_id: UUID,
     db: Session = Depends(get_db),
